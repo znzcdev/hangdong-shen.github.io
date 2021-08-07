@@ -1,0 +1,75 @@
+---
+layout:     post
+title:      "SIP improvement in SBC"
+subtitle:   " \"SIP \""
+date:       2017-11-26 19:27:45 
+author:     "Hangdong"
+header-img: "img/post-sample-image.jpg"
+catalog: true
+tags:
+    - 工作总结
+---
+
+# 前言 #
+
+我是从研究生入学开始接触SIP协议的，这是一种基于文本的协议，很好的迎合了互联网的潮流。
+> The Session Initiation Protocol (SIP) is a communications protocol for signaling and controlling multimedia communication sessions in applications of Internet telephony for voice and video calls, in private IP telephone systems, as well as in instant messaging over Internet Protocol (IP) networks.
+--摘自wiki
+
+该协议主要用于即时消息，语音或者视频电话。我在从事这类工作时，遇到了接入网设备穿越NAT的应用场景，SIP在解决这种场景有很多方案，综合各个方案的优劣以及当时业务的需求，我们采用了SBC（session border controller）的技术方案，但是这种技术方案的框架下，对于早媒体这类的特殊场景，存在转发异常的问题，由此我们提出了改进方案并申请了相关的专利。
+
+---
+
+# 正文 #
+## SIP in NAT ##
+设想如下的SIP应用场景
+
+![](/img/in-post/post-sip/sip-nat.jpg)
+*sip-nat*
+
+NAT设备位于用户私网和公网之间，其主要功能是为流出内网的分组分配一个全局的IP地址和端口号作为其源地址和源端口号，并将此映射关系加入一个地址/端口映射表。对于外来分组，NAT 服务器将利用地址/端口映射表将外来分组的目的IP地址和端口号正确的变换回内部主机所使用的内部IP地址和端口号，然后再转发给内网主机。基于不同的映射方式分为不同的NAT，这里考虑IP地址和端口号同时映射的场景。
+
+## 一个典型的SIP协议报文 ##
+字段一般如下图
+
+![](/img/in-post/post-sip/sip-packet.jpg)
+
+主要分为信令报文和媒体协商报文
+在Message Body里面的Session Description Protocol(SDP)描述了媒体信息，主叫和被叫在协商一致后选择双方都支持的媒体类型进行通信。
+
+## SIP协议栈 ##
+![](/img/in-post/post-sip/stack.png)
+
+通过与其他Internet协议集成来构成完整的多媒体处理框架结构
+对于NAT设备来说，通常处理的是IP层的地址，那么对于在应用层的SIP报文就无法进行处理了。
+
+## SBC方案 ##
+![](/img/in-post/post-sip/Sip_call_using_SBC.png)
+SBC的穿透过程遵循一定的通信模型，在模型中可将会话分解成若干信道。在信道层面，通过对信道进行建立、维护和删除等操作保证信道的可用性，在会话层面，将不同信道进行连接和释放等操作，可以实现整个会话穿透过程。SBC位于两个网络的边界，其架构一般包括两个主要的功能模块：Signaling Proxy 和Media Proxy。其中Signaling Proxy 负责处理SIP会话信令，而Media Proxy负责对媒体流进行控制。 通过这两个模块实现了对SIP消息中地址信息和端口信息的修改。
+
+### Signaling Proxy ###
+Signaling Proxy是一个高性能的B2BUA（Back to Back User Agent），负责对所有经过此节点的双向SIP会话信令进行必要的处理。在B2BUA中，其中一个作为UAS（User Agent Server）负责接收并处理主叫终端的会话请求，而另一个就作为UAC（User Agent Client）向下一跳发出会话请求。与代理服务器不同，B2BUA必须维护各个会话的状态，并参与到会话建立的信令交互过程中。
+
+为了确保SIP会话信令通过SBC，可以修改域名服务器中对应于呼叫服务器（Call Server）的条目，将SBC的IP地址作为呼叫服务器的IP地址响应给进行DNS查询的终端，终端就会把发往呼叫服务器的信令都直接发到SBC。这些改动对终端用户是透明的，但SBC可以获得所有的呼叫信息，并能够参与到呼叫建立的过程中去具体实施控制。其次，Signaling Proxy也必须对SIP会话信令中与信令和媒体有关的地址信息进行修改。
+
+1. SIP用户注册消息处理，Signaling Proxy在截获SIP的用户注册消息之后，将使用自己的IP地址和端口号改写SIP头标中的Via和Contact域，然后再发往呼叫服务器（SIP注册服务器），这样就可以把SIP用户的当前位置绑定在SBC上，当该SIP用户作为被叫的时候，信令都会首先发至SBC。同时，因为NAT服务器会在比较短的间隔内清除地址/端口映射表中的UDP无效表项，所以当终端使用UDP来传输SIP信令的时候，位于NAT服务器之后的终端必须周期性（大概几十秒）的向外部的呼叫服务器发送注册消息，才能够使NAT服务器中对应于该终端的地址/端口映射表项保持有效。
+2. SIP消息改写，为了确保Signaling Proxy始终位于信令通路上，Signaling Proxy必须使用本地的地址和端口号来改写SIP消息中的Via和Contact域。当使用内部地址的终端用户向呼叫服务器发送信令的时候，NAT之后的IP分组将使用NAT服务器分配的源地址和源端口。收到此信令的Signaling Proxy就会在本地建立一个映射关系，NAT服务器将为此终端分配的地址和端口号，以及Signaling Proxy为此会话分配的地址和端口号绑定在一起。这样，当反向信令到达Signaling Proxy的时候，Signaling Proxy将透过NAT上正确的地址和端口号将信令发送给终端。
+3. 修改SDP，为了将Media Proxy加入到媒体通路中，SIP消息中的SDP部分也应当被改写。SDP中包括了终端准备用来收发媒体的地址和端口信息。当终端位于NAT之后的时候，这些信息如果原封不动的送达通信对端，就会导致通信对端发送媒体流失败。Signaling Proxy将通过Media Proxy分配本地的地址和端口号，并使用本地的地址和端口号改写这些信息，就可以保证双向媒体流的建立。
+
+Signaling Proxy只对特定SIP信令消息中的特定域进行修改，其他的消息和域都将维持不变。
+
+### Media Proxy ###
+Media Proxy接受Signaling Proxy的控制，是会话双方之间RTP/RTCP媒体流的转换点。因为所有的媒体流都要经过Media Proxy，所以应当具有控制媒体流的能力，对服务质量进行管理，获取计费信息及动态的网络地址/端口转换等。
+
+经过SBC信令和媒体流整个过程如图2所示。当主叫的用户代理（UA）发起呼叫的时候，Signaling Proxy会在收到INVITE消息之后向Media Proxy申请分配本地的NAT地址和端口（呼叫服务器侧），并使用Media Proxy 返回的地址和端口号，改写信令消息中携带的SDP，然后再发往呼叫服务器，最终由呼叫服务器送达被叫方。当反向信令到达Signaling Proxy的时候，Signaling Proxy会再次向Media Proxy申请分配本地的NAT地址和端口（主叫用户侧），并使用返回的地址和端口号改写反向信令中携带的SDP，然后再发往主叫的用户代理。 
+
+经过这样的信令处理之后，主叫和被叫都会将媒体流发往Media Proxy上指定地址和端口，此时Media Proxy就可以通过读取媒体流的源地址和源端口来确定位于NAT之后的主叫/被叫在其NAT上所使用的全局地址和端口，进而把通信对端的媒体流发往该地址/端口。因为NAT上已经存在了对应此全局地址/端口的映射关系，NAT会将此媒体流转发给内部的终端，至此双向的媒体连接建立成功。因此，SBC在不降低网络安全性的前提下，为NAT后的用户提供了安全的双向通信。
+
+## sip improvement in SBC ##
+然而SBC这种方案对于早媒体的情况下，由于主叫设备的媒体在没有达到SBC前，被叫设备的媒体报文则不会通过SBC发送给主叫方设备，这时候的的被叫设备的早媒体就可能丢弃掉了。
+
+所以基于以上的场景我们提出了对SIP协议的扩展，通过新增attribute属性字段来进行这种情况下的用户体验改善。(详见专利。)
+
+---
+
+

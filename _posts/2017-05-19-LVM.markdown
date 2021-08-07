@@ -1,0 +1,77 @@
+---
+layout:     post
+title:      "Linux探秘"
+subtitle:   " \"LVM \""
+date:       2017-05-23 16:27:45 
+author:     "Hangdong"
+header-img: "img/post-bg-unix-linux.jpg"
+catalog: true
+tags:
+    - 技术
+---
+
+# 前言 #
+
+这篇算是VFS第三个姊妹篇，上一篇讲了上层是如何使用的，这一篇讲下VFS里面的FS也就是文件系统是怎么通过物理的硬盘抽象出来的。我的思路时候围绕VFS这个核心把整个一套撸一遍，从底层到上层都能有个清晰的认识。
+
+---
+
+# 正文 #
+
+在开始之前请大家回顾下VFS开篇提到的图中和FS相关的。
+
+当我们使用硬盘的时候，上完电的第一个步骤是建立分区，这个分区是和具体某个硬盘绑定的，如果你想要获得一个可以随意扩展的存储，只有分区是不够的，你需要LVM来帮忙你，这个广告打的还阔以？
+
+让我们开始探秘下LVM，这里给出linux在逻辑层面的LVM图，本人手绘，:)
+
+![](/img/in-post/LVM.png)
+*FS-LVM-PV*
+
+> What is LVM:
+> LVM includes all of the support for handling read/write operations on
+  physical volumes (hard disks, RAID-Systems, magneto optical, etc.,
+  multiple devices (MD), see mdadd(8) or even loop devices, see losetup(8)),
+  creating volume groups (kind of virtual disks) from one or more physical
+  volumes and creating one or more logical volumes (kind of logical partitions)
+  in volume groups.
+
+LVM是 Logical Volume Manager（逻辑卷管理）的简写，可用于管理磁盘驱动器或其他类似的大容量存储设备，它由Heinz Mauelshagen在Linux 2.4内核上实现，于1998年发布到Linux社区中，使用内核的device-mapper来实现存储系统的虚拟化（系统分区独立于底层硬件）。 通过LVM，你可以实现存储空间的抽象化并在上面建立虚拟分区，可以更简便地扩大和缩小分区，可以增删分区时无需担心某个硬盘上没有足够的连续空间，也就是灵活性，可扩展性。
+
+详述下这个图，PV也就是物理卷，可以是一个磁盘，多个磁盘，也可以是其他块设备，分区，VG也就是卷组，多个物理卷通过VG统一管理，这里VG就像一个容器一样，如果你需要扩大，缩小存储空间，从物理上直接加载新的存储设备或者解除挂载某些存储设备就可以了。对于上层使用者来说直接在这个容器里面创建大小不同的分区文件，这个分区文件就叫做逻辑卷LV，在逻辑卷的上面是具体的文件系统比如XFS。
+
+如果你不做特殊的配置的话，LV和底层的磁盘是没有直接的联系的。
+
+LVM可以给系统创建一个快照，snapshot也是直接基于VG创建的，使用了写入时复制(copy-on-write) 策略。正常备份数据的时候数据不能发生变化，否则备份出来的数据的是不完整的。但对于1T的数据做备份需要半个小时以上，这期间数据很难保持不变，为了解决这个问题，快照卷应运而生。
+
+快照是在一瞬间记录下要备份的内容的元数据，然后监控这些元数据，如果元数据即将发生变化，就把将要变化的内容备份到快照里面，这样，快照里就存储着变化前的数据的备份。
+
+创建快照后最好立刻把快照里的数据复制到备份盘里（可能备份文件时对很多文件说快照只是个硬链接而已，对于发生变化的文件，在变化前被复制到快照里），快照就被立即删掉，快照不会存在太久。快照只是为了解决直接备份数据会发生变化的难题。
+
+快照和原文件应该属于同一个卷组vg，通过快照访问未变化的数据时，就像通过一个硬链接直接进入原文件访问。所以创建快照卷时不用格式化。
+
+有两点需要记住：快照是和原始LV绑定的，如果你原始的LV没有了，快照就没啥用了；快照也是有生命周期的，不能替代备份。
+
+- 通过vgcreate来创建PV，这个命令会同时执行pvcreate
+![](/img/in-post/post-lvm/1.png)
+
+- 创建一个1GB的逻辑磁盘
+![](/img/in-post/post-lvm/2.png)
+![](/img/in-post/post-lvm/3.png)
+
+- 创建ext4文件系统，并挂载到/mnt
+![](/img/in-post/post-lvm/4.png)
+![](/img/in-post/post-lvm/5.png)
+
+- 动态扩展这个逻辑磁盘100M
+![](/img/in-post/post-lvm/7.png)
+
+- 创建snapshot，删除文件通过snapshot来恢复
+![](/img/in-post/post-lvm/8snapshot.png) 
+![](/img/in-post/post-lvm/9.png)
+
+## LVM实现 ##
+LVM的实现不在Linux kernel里面，需要研究代码层面的实现的同学可以去[http://www.sistina.com/lvm/](http://www.sistina.com/lvm/ "lvm") 这个官方地址去获取最新的源代码，就可以探索拉。
+
+---
+
+

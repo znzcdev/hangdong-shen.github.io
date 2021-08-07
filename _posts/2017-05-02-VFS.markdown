@@ -1,0 +1,252 @@
+---
+layout:     post
+title:      "Linux探秘"
+subtitle:   " \"VFS\""
+date:       2017-05-14 12:00:00
+author:     "Hangdong"
+header-img: "img/post-bg-unix-linux.jpg"
+catalog: true
+tags:
+    - 技术
+---
+
+> “Yeah It's on. ”
+
+
+## 前言
+
+Linux这一神器的历史不用多说，最关键的一点是祖师爷Linus Torvald给被欧美高科技技术封锁的中国打开了一扇广阔的大门，而且还是免费的。
+
+对于能够一窥Linux内核的程序员码农来说实在是幸事，本文就记录下我在学习和研究Linux内核过程中的所思，所想和所得，不当之处请不吝赐教。
+
+---
+
+## 正文
+
+VFS的定义描述来自kernel的documentation：
+
+> The Virtual File System (also known as the Virtual Filesystem Switch)
+is the software layer in the kernel that provides the filesystem
+interface to userspace programs. It also provides an abstraction
+within the kernel which allows different filesystem implementations to
+coexist.
+
+The big picture of VFS：
+[https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/IO_stack_of_the_Linux_kernel.svg/440px-IO_stack_of_the_Linux_kernel.svg.png](https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/IO_stack_of_the_Linux_kernel.svg/440px-IO_stack_of_the_Linux_kernel.svg.png "VFS_IO")
+
+![](/img/in-post/The Linux Storage Stack Diagram.png)
+*VFS related*
+
+从这张图里可以较清晰的看到：
+
+* Linux把Ext2文件系统，network， ram和USB外设等全部抽象成VFS，给应用程序来提供通用的访问接口
+* 应用程序通过read/write等通用的系统调用访问文件系统，network，ram，USB 
+* 应用程序mmap和malloc首先是访问Page cache 
+* FUSE可以在用户态创建文件系统，诸如此类的大杀器在此按下不表
+
+	1. 怎么抽象的？
+
+比如我们插入一个USB接口的U盘，在驱动程序ok后，如果要访问它，首选需要mount，kernel在启动后通过启动 init 内核线程来尝试挂载系统中的所有的文件系统:
+	
+	asmlinkage long sys_mount(char __user * dev_name, char __user * dir_name,
+              char __user * type, unsigned long flags,
+              void __user * data)
+	{
+    int retval;
+    unsigned long data_page;
+    unsigned long type_page;
+    unsigned long dev_page;
+    char *dir_page;
+
+    retval = copy_mount_options (type, &type_page);
+    if (retval < 0) 
+        return retval;
+
+    dir_page = getname(dir_name);
+    retval = PTR_ERR(dir_page);
+    if (IS_ERR(dir_page))
+        goto out1;
+
+    retval = copy_mount_options (dev_name, &dev_page);
+    if (retval < 0) 
+        goto out2;
+
+    retval = copy_mount_options (data, &data_page);
+    if (retval < 0) 
+        goto out3;
+
+    lock_kernel();
+    retval = do_mount((char*)dev_page, dir_page, (char*)type_page,
+              flags, (void*)data_page);
+    unlock_kernel();
+    free_page(data_page);
+
+	out3:
+    free_page(dev_page);
+	out2:
+    putname(dir_page);
+	out1:
+    free_page(type_page);
+    return retval;
+	}
+
+sys_mount把用户空间的参数复制到内核空间，然后do_mount
+	
+	long do_mount(const char *dev_name, const char __user *dir_name,
+        const char *type_page, unsigned long flags, void *data_page)
+	{    
+    	do_new_mount`
+	}
+
+这里只贴了最重要的一个调用do_new_mount
+
+    static int do_new_mount(struct path *path, const char *fstype, int flags,`
+            int mnt_flags, const char *name, void *data)`
+	{
+
+    struct file_system_type *type;
+    struct vfsmount *mnt;
+    int err;
+
+    if (!fstype)
+        return -EINVAL;
+
+    type = get_fs_type(fstype);
+    if (!type)
+        return -ENODEV;
+
+    mnt = vfs_kern_mount(type, flags, name, data);
+    if (!IS_ERR(mnt) && (type->fs_flags & FS_HAS_SUBTYPE) &&
+        !mnt->mnt_sb->s_subtype)
+        mnt = fs_set_subtype(mnt, fstype);
+
+    put_filesystem(type);
+    if (IS_ERR(mnt))
+        return PTR_ERR(mnt);
+
+    if (mount_too_revealing(mnt, &mnt_flags)) {
+        mntput(mnt);
+        return -EPERM;
+    }
+
+    err = do_add_mount(real_mount(mnt), path, mnt_flags);
+    if (err)
+        mntput(mnt);
+    return err;
+	}
+
+每个已安装的文件系统都会有一个 struct vfsmount 结构体变量来进行描述（这个变量描述的是已安装(mount)的文件系统，而 filesystem_type 则描述已注册的文件系统），这里就是为要新安装的文件系统分配一个struct vfsmount 变量，接着根据文件系统名遍历file_systems 找到已注册的那个文件系统对象并调用 get_sb() 函数来读入超级块，执行挂载操作。
+
+所有安装到 VFS 里的文件系统，都有一个 vfsmount 结构体，而文件系统安装之前，则必须先注册它，这就要使用 file_system_type 结构体来描述一个需要注册在 VFS 里的文件系统，通过 register_filesystem()这个接口注册到 VFS 内。
+拿ext2举个栗子：
+    
+	static int __init init_ext2_fs(void)
+	{
+    int err; 
+
+    err = init_inodecache();
+    if (err)
+        return err; 
+        err = register_filesystem(&ext2_fs_type);
+    if (err)
+        goto out; 
+    return 0;
+	out:
+    destroy_inodecache();
+    return err; 
+	}
+
+ext2文件系统在启动的时候向VFS注册自己的对象属性。
+do_new_mount有两个与mount相关的动作，一个是vfs_kern_mount，一个是do_add_mount
+    
+	struct vfsmount *
+	vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void *data)
+	{
+	    struct mount *mnt;
+	    struct dentry *root;
+	
+	    if (!type)
+	        return ERR_PTR(-ENODEV);
+	
+	    mnt = alloc_vfsmnt(name);
+	    if (!mnt)
+	        return ERR_PTR(-ENOMEM);
+	
+	    if (flags & MS_KERNMOUNT)
+	        mnt->mnt.mnt_flags = MNT_INTERNAL;
+	
+	    root = mount_fs(type, flags, name, data);
+	    if (IS_ERR(root)) {
+	        mnt_free_id(mnt);
+	        free_vfsmnt(mnt);
+	        return ERR_CAST(root);
+	    }    
+	
+	    mnt->mnt.mnt_root = root;
+	    mnt->mnt.mnt_sb = root->d_sb;
+	    mnt->mnt_mountpoint = mnt->mnt.mnt_root;
+	    mnt->mnt_parent = mnt; 
+	    lock_mount_hash();
+	    list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+	    unlock_mount_hash();
+	    return &mnt->mnt;
+	}
+    /*
+ 	* add a mount into a namespace's mount tree
+ 	*/
+	static int do_add_mount(struct mount *newmnt, struct path *path, int mnt_flags)
+	{
+	    struct mountpoint *mp;
+	    struct mount *parent;
+	    int err;
+	
+	    mnt_flags &= ~MNT_INTERNAL_FLAGS;
+	
+	    mp = lock_mount(path);
+	    if (IS_ERR(mp))
+	        return PTR_ERR(mp);
+	
+	    parent = real_mount(path->mnt);
+	    err = -EINVAL;
+	    if (unlikely(!check_mnt(parent))) {
+	        /* that's acceptable only for automounts done in private ns */
+	        if (!(mnt_flags & MNT_SHRINKABLE))
+	            goto unlock;
+	        /* ... and for those we'd better have mountpoint still alive */
+	        if (!parent->mnt_ns)
+	            goto unlock;
+	    }
+	
+	    /* Refuse the same filesystem on the same mount point */
+	    err = -EBUSY;
+	    if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
+	        path->mnt->mnt_root == path->dentry)
+	        goto unlock;
+	
+	    err = -EINVAL;
+	    if (d_is_symlink(newmnt->mnt.mnt_root))
+	        goto unlock;
+	
+	    newmnt->mnt.mnt_flags = mnt_flags;
+	    err = graft_tree(newmnt, parent, mp);
+	
+		unlock:
+	    unlock_mount(mp);
+	    return err;
+	}
+
+kernel里面goto实现也蛮多的，我看的是4.10相比2.6已经优化了很多goto，说明只要用的得体，goto也不是什么洪水猛兽，我想起当时我和某一个前东家的架构师对goto的讨论，也许他要是看到这些代码应该也能接受了吧。
+
+这两个方法获取vsfmount对象，将新挂载的文件系统插入队列，接着安装新的文件系统到用户空间的目录树，当用户查找文件时，只要他发现这是一个挂载点，那么他就会到 mount_hashtable 这个哈希队列找到挂载到这个目录上的文件系统的 vfsmount 对象，继而找到文件系统的根目录，这样也就能继续寻找下去了。
+
+    struct vfsmount {
+	struct dentry *mnt_root;	/* root of the mounted tree */
+	struct super_block *mnt_sb;	/* pointer to superblock */
+	int mnt_flags;
+	};
+
+整个过程的关键线索vfsmount的数据结构如图所示，主要包含了根节点信息，超级块信息。
+
+---
+
+
