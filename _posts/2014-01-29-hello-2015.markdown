@@ -1,0 +1,50 @@
+---
+layout:     post
+title:      "Hello 2017"
+subtitle:   " \"Hello World, Hello Blog\""
+date:       2017-04-14 12:00:00
+author:     "Hangdong"
+header-img: "img/post-bg-2015.jpg"
+catalog: true
+tags:
+    - 生活
+---
+
+> “Yeah It's on. ”
+
+
+## 前言
+
+Hangdong 的 Blog 就这么开通了。
+
+2017 年，Hangdong 总算有个地方可以好好写点东西了,再也不用担心辛苦写的东西被拾掇扔了。
+
+作为一个程序员， Blog 这种轮子要是挂在大众博客程序上就太没意思了。一是觉得大部分 Blog 服务都太丑，二是觉得不能随便定制不好玩。之前因为太懒没有折腾，结果就一直连个写 Blog 的地儿都没有。
+
+在玩了一段时间知乎之后，对生活和技术的学习总结让我有了开博客的冲动。
+
+---
+
+## 正文
+
+接下来说说搭建这个博客的技术细节。  
+
+正好之前就有关注过 [GitHub Pages](https://pages.github.com/) + [Jekyll](http://jekyllrb.com/) 快速 Building Blog 的技术方案，非常轻松时尚。
+
+其优点非常明显：
+
+* **Markdown** 带来的优雅写作体验
+* 非常熟悉的 Git workflow ，**Git Commit 即 Blog Post**
+* 利用 GitHub Pages 的域名和免费无限空间，不用自己折腾主机
+	* 如果需要自定义域名，也只需要简单改改 DNS 加个 CNAME 就好了 
+* Jekyll 的自定制非常容易，基本就是个模版引擎
+
+配置的过程网上有很多介绍，就不再搬砖了，但是还是有坑比如：
+本地调试环境需要 `gem install jekyll`，结果 rubygem 的源居然被墙了……后来手动改成了我大淘宝的镜像源才成功。
+费了半天周折出了一个demo，但是我最推荐的还是在git里面找一个自己喜欢的page，直接fork过来才是最有效的方式，毕竟站在巨人的肩膀上才能看的更远，对吧。
+还有就是代码的checkout和checkin使用命令行方式是最高效的。
+这个博客重点关注的是职业规划，软件中间件的设计和开发。
+
+---
+
+
